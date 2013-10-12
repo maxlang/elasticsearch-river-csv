@@ -34,7 +34,7 @@ public class CSVRiverPlugin extends AbstractPlugin {
 
     @Override
     public String name() {
-        return "river-csv";
+        return "river-csv-max";
     }
 
     @Override

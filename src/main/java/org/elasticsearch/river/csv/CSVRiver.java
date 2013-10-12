@@ -22,9 +22,12 @@ import au.com.bytecode.opencsv.CSVReader;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.bulk.BulkRequestBuilder;
 import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.update.UpdateRequestBuilder;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -36,14 +39,14 @@ import org.elasticsearch.river.RiverName;
 import org.elasticsearch.river.RiverSettings;
 import org.elasticsearch.threadpool.ThreadPool;
 
-import java.io.File;
-import java.io.FileReader;
-import java.io.FilenameFilter;
-import java.io.IOException;
+import java.io.*;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  *
@@ -130,8 +133,9 @@ public class CSVRiver extends AbstractRiverComponent implements River {
     }
 
 
-    private void processBulkIfNeeded() {
-        if (currentRequest.numberOfActions() >= bulkSize) {
+    private void processBulkIfNeeded(Boolean force) {
+        if (force || currentRequest.numberOfActions() >= bulkSize) {
+            logger.warn("sending {} actions", currentRequest.numberOfActions());
             // execute the bulk operation
             int currentOnGoingBulks = onGoingBulks.incrementAndGet();
             if (currentOnGoingBulks > bulkThreshold) {
@@ -147,22 +151,28 @@ public class CSVRiver extends AbstractRiverComponent implements River {
             }
             {
                 try {
-                    currentRequest.execute(new ActionListener<BulkResponse>() {
+                    currentRequest.setRefresh(false).execute(new ActionListener<BulkResponse>() {
                         @Override
                         public void onResponse(BulkResponse bulkResponse) {
+                            logger.warn("Got response change bulks from {}", onGoingBulks);
                             onGoingBulks.decrementAndGet();
+                            logger.warn("to {}", onGoingBulks);
                             notifyCSVRiver();
                         }
 
                         @Override
                         public void onFailure(Throwable e) {
+                            logger.warn("Got response change bulks from {}", onGoingBulks);
                             onGoingBulks.decrementAndGet();
+                            logger.warn("to {}", onGoingBulks);
                             notifyCSVRiver();
                             logger.warn("failed to execute bulk");
                         }
                     });
                 } catch (Exception e) {
+                    logger.warn("Got response change bulks from {}", onGoingBulks);
                     onGoingBulks.decrementAndGet();
+                    logger.warn("to {}", onGoingBulks);
                     notifyCSVRiver();
                     logger.warn("failed to process bulk", e);
                 }
@@ -192,9 +202,17 @@ public class CSVRiver extends AbstractRiverComponent implements River {
 
                         processFile(file);
 
+                        while (onGoingBulks.get() > 0) {
+                            logger.warn("done, ongoing bulk, [{}], waiting", onGoingBulks);
+//                            Thread.sleep(500); //TODO: make this wake up
+                            synchronized (CSVRiver.this) {
+                                CSVRiver.this.wait();
+                            }
+                        }
+
                         file = renameFile(file, ".imported");
                         lastProcessedFile = file;
-                        processBulkIfNeeded();
+                        processBulkIfNeeded(true);
                     }
                     delay();
                 } catch (Exception e) {
@@ -229,22 +247,88 @@ public class CSVRiver extends AbstractRiverComponent implements River {
         }
 
         private void processFile(File file) throws IOException {
-            CSVReader reader = new CSVReader(new FileReader(file), separator, quoteCharacter, escapeCharacter);
+            CSVReader reader = new CSVReader(new BufferedReader(new FileReader(file)), separator, quoteCharacter, escapeCharacter);
             String[] nextLine;
+            Pattern p = Pattern.compile("Performance.*", Pattern.CASE_INSENSITIVE);
+            Matcher matcher = p.matcher(filenamePattern);
+            Boolean performanceData = matcher.find();
+
+            logger.info("File patter {} matches? {}", filenamePattern, performanceData);
+
             while ((nextLine = reader.readNext()) != null) {
                 if (nextLine.length > 0 && !(nextLine.length == 1 && nextLine[0].trim().equals(""))) {
-                    XContentBuilder builder = XContentFactory.jsonBuilder();
-                    builder.startObject();
 
-                    int position = 0;
-                    for (Object fieldName : csvFields) {
-                        builder.field((String) fieldName, nextLine[position++]);
+                    String id = UUID.randomUUID().toString();
+
+
+                    if (performanceData) {
+                        Map<String, Object> holder = new HashMap<String, Object>();
+                        Map<String, Object> holder2 = new HashMap<String, Object>();
+
+
+                        Map<String, Object> m = new HashMap<String, Object>();
+
+                        int position = 0;
+                        for (Object fieldName : csvFields) {
+                            if (fieldName.equals("Loan Identifier")) {
+                                id = nextLine[position];
+                            }
+                            m.put((String) fieldName, nextLine[position++]);
+                        }
+
+                        holder.put("p", m);
+
+                        Object[] dontGetUpsert = {m};
+
+                        holder2.put("performance", dontGetUpsert);
+
+                        UpdateRequestBuilder urb = client.prepareUpdate(indexName, typeName, id).setScript("ctx._source.performance += p").setScriptParams(holder).setUpsert(holder2);
+
+//                        logger.info("Query: {}", urb);
+//                        logger.info("Query2: {}", urb.request().toString());
+//
+//                        StreamOutput outputStream = new BytesStreamOutput();
+//
+//                        urb.request().writeTo(outputStream);
+//
+//                        logger.info("Query3: {}", outputStream.toString());
+//
+//
+//                        byte[] b = new byte[10000];
+//
+//                        outputStream.write(b);
+//                        outputStream.flush();
+//
+//                        logger.info("Query4: {}", new String(b));
+
+                        currentRequest.add(urb);
+
+                    } else {
+
+                        XContentBuilder builder = XContentFactory.jsonBuilder();
+                        builder.startObject();
+
+                        int position = 0;
+                        for (Object fieldName : csvFields) {
+                            if (fieldName.equals("Loan Identifier")) {
+                                id = nextLine[position];
+                            }
+                            builder.field((String) fieldName, nextLine[position++]);
+                        }
+                        Object[] o = {};
+                        builder.field("performance", o);
+
+                        builder.endObject();
+
+//                        currentRequest.add(client.prepareUpdate(indexName, typeName, id).setDoc(builder).setDocAsUpsert(true));
+
+                        currentRequest.add(Requests.indexRequest(indexName).type(typeName).id(id).create(true).source(builder));
                     }
-                    builder.endObject();
-                    currentRequest.add(Requests.indexRequest(indexName).type(typeName).id(UUID.randomUUID().toString()).create(true).source(builder));
                 }
-                processBulkIfNeeded();
+                processBulkIfNeeded(false);
             }
+            processBulkIfNeeded(true);
+            reader.close();
         }
     }
 }
