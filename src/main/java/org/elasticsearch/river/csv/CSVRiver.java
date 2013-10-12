@@ -202,6 +202,8 @@ public class CSVRiver extends AbstractRiverComponent implements River {
 
                         processFile(file);
 
+                        processBulkIfNeeded(true);
+
                         while (onGoingBulks.get() > 0) {
                             logger.warn("done, ongoing bulk, [{}], waiting", onGoingBulks);
 //                            Thread.sleep(500); //TODO: make this wake up
@@ -212,7 +214,6 @@ public class CSVRiver extends AbstractRiverComponent implements River {
 
                         file = renameFile(file, ".imported");
                         lastProcessedFile = file;
-                        processBulkIfNeeded(true);
                     }
                     delay();
                 } catch (Exception e) {
