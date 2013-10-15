@@ -271,7 +271,7 @@ public class CSVRiver extends AbstractRiverComponent implements River {
 
                         int position = 0;
                         for (Object fieldName : csvFields) {
-                            if (fieldName.equals("Loan Identifier")) {
+                            if (fieldName.equals("Loan_Identifier")) {
                                 id = nextLine[position];
                             }
                             m.put((String) fieldName, nextLine[position++]);
@@ -311,7 +311,7 @@ public class CSVRiver extends AbstractRiverComponent implements River {
 
                         int position = 0;
                         for (Object fieldName : csvFields) {
-                            if (fieldName.equals("Loan Identifier")) {
+                            if (fieldName.equals("Loan_Identifier")) {
                                 id = nextLine[position];
                             }
                             builder.field((String) fieldName, nextLine[position++]);
